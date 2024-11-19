@@ -4,26 +4,26 @@ This project is a hardware-software integrated system designed to monitor pet he
 
 ---
 
-## 🛠️ Hardware Architecture
+## 🛠️ Hardware Architecture / Backend Mobile App System Architecture 
 
                                                   [ LiPo Battery ]
                                                          |
                                             [ Power Management Circuit ]
                                                          |
-    --------------------------------------------------------------------------------------------------------------
-    |                                                                                                            |
-    |                  [ Microcontroller (Quad-core ARM Cortex-A55 @ 1.6GHz + Mali-G52 GPU) ]                    |
-    |                                                                                                            |
-    |         [i2c Bus 4]                [uart2-m0]    [MIPI CSI]   [I2S BUS 3]          [Runs Locally On eMMC]  |
-    ---------------|-------------------------|-------------|-------------|---------------------------|------------
-        -----------------------              |             |             |             |             |
-        |          |          |              |             |             |             |             | 
-    [ Heart ]   [ Temp ]   [ Movment ]  [GPS Module]    [Camera]   [Microphone]     [Comm]        [Yamnet]
-    [MAX30102]  [DS18B20]  [ MPU6050 ]  [VK28U7G5LF]    [Module]     [INMP441]    [Wi-Fi/Blu]      [MLM]
+    ----------------------------------------------------------------------------------------------------------------
+    |                                                                                                              |
+    |                  [ Microcontroller (Quad-core ARM Cortex-A55 @ 1.6GHz + Mali-G52 GPU) ]                      |
+    |                                                                                                              |
+    |         [i2c Bus 4]                [uart2-m0]    [MIPI CSI]   [I2S BUS 3]            [Runs Locally On eMMC]  |
+    ---------------|-------------------------|-------------|-------------|----------------------------|-------------
+        -----------------------              |             |             |             |              |
+        |          |          |              |             |             |             |              | 
+    [ Heart ]   [ Temp ]   [ Movment ]  [GPS Module]    [Camera]   [Microphone]     [Comm]         [Yamnet]
+    [MAX30102]  [DS18B20]  [ MPU6050 ]  [VK28U7G5LF]    [Module]     [INMP441]    [Wi-Fi/Blu]       [MLM]
                                                                                   [TTP/HTTPS]
                                                                                        |
                                                                                        |
-## 🛠️ Backend Mobile App System Architecture                                          
+                                                                                       |                                         
                                                                      ------------------|----------------------
                                                                      |                                       |
                                                                      |         [Mobile Application]          |
@@ -81,24 +81,6 @@ The system combines real-time data collection with AI-powered classification mod
   - `/gps`   : Provides real-time GPS location data.
   - `/status`: Provides real-time sensor and classification data.
   - `/reboot`: Reboots the system.
-
----
-
-## 📂 Directory Structure
-
-📁 Pet_Monitor_Project 
-├── 📁 model       # TensorFlow Lite models (YAMNet, custom classifier) 
-├── main.py        # Main program 
-├── calibration.py # Calibration script for MPU6050 
-├── filters.py     # Audio filters (bandpass filter) 
-├── DeviceNum.py   # Automatically select sound card device number
-├── mpu.py         # Operation for movement Detection
-├── Temp.py        # Operation for Measuring body temperature
-├── heart.py       # Heart rate sensor integration 
-├── gps.py         # GPS module integration 
-├── shared_data.py # Shared state between threads 
-└── README.md      # Project documentation
-
 
 ---
 
