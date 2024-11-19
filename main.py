@@ -1,15 +1,18 @@
 import threading
 import subprocess
+import numpy as np
 import time
 import os
 import cv2
+import json
 #Flask server
-from flask import Flask, jsonify, Response, stream_with_context
+from flask import Flask, jsonify, Response, stream_with_context, request
 from flask_cors import CORS
 from werkzeug.serving import make_server
 from threading import Event
 import logging
 #Sensors
+import gps
 import shared_data
 from filters import bandpass_filter
 from mpu import get_mpu6050_data, detect_movement
@@ -17,26 +20,26 @@ from calibration import get_calibration_data
 from Temperuture_sensor import read_temperature_humidity
 from heart import initialize_sensor, read_max30102, calculate_heart_rate
 from DeviceNum import get_device_index
-#from GGPIO import enable_pins, disable_pins
 #Recoring and Yamnet
 import sounddevice as sd
-import numpy as np
 import tflite_runtime.interpreter as tflite
 from sklearn.preprocessing import LabelEncoder
-from collections import deque, Counter   # for most common label
+from collections import deque, Counter   # for most common label (Buffers)
 
 #Global Definitions
 terminate_flag = False  # Flag for stopping threads
 recording = False
+Gps_navigating = False
+gps_thread = None  # Thread for GPS tracking
+
 desired_device_name = "test"
 device_index = get_device_index(desired_device_name)
-
 
 # Paths and parameters
 OUTPUT_DIR = "/home/radxa/yamnet/Recorded_audio_Debug"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 sample_rate = 16000
-segment_duration = 0.96  # 1-second segments for processing
+segment_duration = 0.96  # .96-mill-second segments for processing
 bandpass_lowcut = 300
 bandpass_highcut = 5000
 prediction_lock = threading.Lock()
@@ -58,7 +61,7 @@ label_encoder = LabelEncoder()
 label_encoder.classes_ = np.array(['Angry', 'Fighting', 'Happy', 'HuntingMind', 'Noise', 'Purring'])
 
 # Buffer for predictions
-predictions_buffer = deque(maxlen=30)  # Stores the last 4 seconds of predictions (excluding "Noise")
+predictions_buffer = deque(maxlen=30)  # Stores the last 3 seconds of predictions (excluding "Noise")
 segment_counter = 0
 
 # Timer for limiting label display
@@ -67,6 +70,8 @@ display_interval = 2  # Display the most common label every 4 seconds
 
 ######################## Mobile App Flutter ##################################
 recording_event = Event()
+gps_event = Event()
+
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
@@ -94,7 +99,6 @@ def index():
 def camera_stream():
     global  recording
     recording = True  # Indicate recording started
-    #disable_pins()  # Turn off peripherals during streaming
 
     def generate():
         try:
@@ -120,8 +124,38 @@ def camera_stream():
             print("Camera stream ended.")
             #enable_pins()  # Turn peripherals back on
 
-
     return Response(stream_with_context(generate()), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/gps_coordinates', methods=['GET'])
+def gps_coordinates():
+    """Endpoint to retrieve the latest GPS coordinates."""
+    global Gps_navigating
+
+    if not Gps_navigating:
+        Gps_navigating = True
+        if not gps.gps_running:  # Ensure tracking isn't already running
+            gps_thread_instance = threading.Thread(
+                target=gps.start_gps_tracking,
+                kwargs={"port": "/dev/ttyS2", "baudrate": 9600},
+                daemon=True
+            )
+            gps_thread_instance.start()
+
+    # Fetch the latest GPS coordinates
+    coordinates = gps.get_current_coordinates()
+    return jsonify(coordinates)
+
+@app.route('/set_gps_navigating', methods=['POST'])
+def set_gps_navigating():
+    """Endpoint to control the GPS navigating state."""
+    global Gps_navigating
+    data = request.get_json()
+    if 'Gps_navigating' in data:
+        Gps_navigating = data['Gps_navigating'] # return from app true or false
+        if not Gps_navigating:
+            gps.stop_gps_tracking()  # Stop GPS tracking if navigating is set to False
+        return jsonify({"status": "success", "Gps_navigating": Gps_navigating})
+    return jsonify({"status": "error", "message": "Invalid request"}), 400
 
 @app.route('/status', methods=['GET'])
 def get_status():
@@ -133,6 +167,25 @@ def get_status():
         'classification': shared_data.current_classification,
         'is_running': shared_data.is_running
     })
+
+@app.route('/save_report', methods=['POST'])
+def save_report():
+    """Endpoint to save the monitor report."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"status": "error", "message": "No data provided"}), 400
+
+    # Log received data
+    #print(f"Received report: {data}")
+
+    try:
+        file_path = "/home/radxa/examples/monitor_report.log"
+        with open(file_path, "a") as log_file:
+            log_file.write(f"{time.ctime()} - {json.dumps(data)}\n")
+        return jsonify({"status": "success", "message": "Report saved"})
+    except Exception as e:
+        print(f"Error saving report: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/reboot', methods=['POST'])
 def reboot_device():
@@ -155,11 +208,11 @@ class ServerThread(threading.Thread):
         print("Shutting down Flask server...")
         self.server.shutdown()
 
-################################ Sensors Loop ############################################
+################################ Sensors and classification Loop ############################################
 
 def main_sensor_loop(accel_offsets, gyro_offsets, prev_data):
     """Unified loop to handle temperature, MPU6050, and heart rate data."""
-    global recording
+    global recording, Gps_navigating
     temperature_timer = time.time()
     mpu_timer = time.time()
     heart_rate_timer = time.time()
@@ -168,6 +221,7 @@ def main_sensor_loop(accel_offsets, gyro_offsets, prev_data):
     # Initial temperature and humidity reading
     try:
         temp, hum = read_temperature_humidity()
+        # Read data from the heart rate sensor
         if temp is not None and hum is not None:
             shared_data.current_temperature = temp
             shared_data.current_humidity = hum
@@ -178,14 +232,15 @@ def main_sensor_loop(accel_offsets, gyro_offsets, prev_data):
         print(f"Error in initial temperature reading: {e}")
 
     while not terminate_flag:
-        if not recording:
+        if not recording and not Gps_navigating:
             # Real-time classification
             if time.time() - classification_timer >= 1:  # Every 1 second
                 run_real_time_classification()
                 classification_timer = time.time()
 
             # Update MPU6050 data
-            if time.time() - mpu_timer >= 0.25:  # Every 0.5 seconds
+            if time.time() - mpu_timer >= 0.25:  # Every 0.25 seconds
+                #print("Reading Data.")
                 mpu_data = get_mpu6050_data(accel_offsets, gyro_offsets, prev_data)
                 prev_data = mpu_data
                 shared_data.movement = detect_movement()
@@ -206,7 +261,6 @@ def main_sensor_loop(accel_offsets, gyro_offsets, prev_data):
                         #print(f"Temperature: {temp:.2f} °C, Humidity: {hum:.2f} %")
                     else:
                         print("Failed to read temperature and humidity.")
-
 
                 except Exception as e:
                     print(f"Error in temperature reading: {e}")
@@ -238,17 +292,21 @@ def main_sensor_loop(accel_offsets, gyro_offsets, prev_data):
                 # Update the heart rate timer
                 heart_rate_timer = time.time()
 
-
         else:
-            # Wait during recording
+            # Wait during recording and Navigating GPS
             #print("Recording in progress, waiting...")
-            recording_event.wait(timeout=5)  # Wait until recording ends or timeout
+            recording_event.wait(timeout=3)  # Wait until recording ends or timeout
+            gps_event.wait(timeout=3)
+
             if recording:  # Timeout occurred
                 recording = False
 
+            if Gps_navigating:  # Timeout occurred
+                Gps_navigating = False
+
         time.sleep(0.1)  # Small sleep to reduce CPU usage
 
-################################ Yamnet  ############################################
+################################ Yamnet Model and recording ############################################
 
 # Function to display the most common label every 4 seconds
 def display_common_label():
@@ -305,25 +363,21 @@ def audio_callback(indata, frames, time, status):
             #print(f"Predicted label: {predicted_label}")
             display_common_label()  # Display the most common label every 4 seconds
 
-
 def run_real_time_classification():
     #print("Starting real-time classification...")
-    #device_index = 0  # Replace with the correct device index
     global recording, device_index
 
     try:
         with sd.InputStream(device=device_index, callback=audio_callback, channels=1, samplerate=sample_rate,
                             blocksize=int(segment_duration * sample_rate)):
             #print("Processing audio segment...")
-            # No need for a while loop as `main_sensor_loop` controls the calls
             time.sleep(0.1)  # Allow the input stream to process
     except Exception as e:
         print(f"Error in real-time classification: {e}")
 
     #print("Real-time classification finished.")
 
-
-################################ Main Loop Operation ##########################################
+################################ Main Loop Operations ##########################################
 
 def input_listener():
     """Listens for termination signal."""

@@ -1,103 +1,95 @@
-import math
-import time
 import serial
+import threading
+import time
 
-# Constants
-AVERAGE_STEP_LENGTH = 0.35
-distance_traveled = 0
-MOVEMENT_DISTANCE_THRESHOLD = 5.0
-MIN_TIME_INTERVAL = 3
-MINIMUM_SPEED_THRESHOLD = 0.5
-MAXIMUM_SPEED_THRESHOLD = 5.0  # Maximum realistic speed for a pet in m/s
+# Global variable to store the latest GPS coordinates
+current_coordinates = {"latitude": None, "longitude": None}
+gps_running = False  # Control flag for GPS tracking
 
-# Tracking variables
-speed_buffer = []
-previous_lat = None
-previous_lon = None
-previous_time = None
 
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371e3
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
-    a = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
 
-def calculate_speed(lat1, lon1, lat2, lon2, time_elapsed):
-    distance = haversine(lat1, lon1, lat2, lon2)
-    return distance / time_elapsed if time_elapsed > 0 else 0
-
-gps_serial = serial.Serial('/dev/ttyS2', baudrate=9600, timeout=1)
-print("Reading GPS data from /dev/ttyS2...")
+def convert_to_decimal_degrees(raw_value, direction):
+    """Convert raw NMEA format to decimal degrees."""
+    degrees = int(raw_value // 100)
+    minutes = raw_value % 100
+    decimal_degrees = degrees + (minutes / 60)
+    if direction in ['S', 'W']:
+        decimal_degrees *= -1
+    return decimal_degrees
 
 def parse_gps_data(data):
-    global previous_lat, previous_lon, previous_time, distance_traveled, speed_buffer
-
+    """Parse NMEA sentences to extract latitude and longitude."""
+    global current_coordinates
     if data.startswith('$GPGGA'):
         parts = data.split(',')
-        if len(parts) > 8:
-            # Get latitude, longitude, and HDOP
-            lat = float(parts[2])
-            lon = float(parts[4])
-            hdop = float(parts[8])
+        if len(parts) > 5:
+            try:
+                # Parse latitude
+                raw_lat = float(parts[2]) if parts[2] else 0
+                lat_dir = parts[3]
+                latitude = convert_to_decimal_degrees(raw_lat, lat_dir)
 
-            # Filter based on HDOP quality (ignore high HDOP values)
-            if hdop > 6.0:
-                print("Poor GPS signal quality (HDOP too high), ignoring reading.")
-                return
+                # Parse longitude
+                raw_lon = float(parts[4]) if parts[4] else 0
+                lon_dir = parts[5]
+                longitude = convert_to_decimal_degrees(raw_lon, lon_dir)
 
-            current_time = time.time()
+                current_coordinates["latitude"] = latitude
+                current_coordinates["longitude"] = longitude
+                #print(f"Updated coordinates: {current_coordinates}")
 
-            if previous_lat is not None and previous_lon is not None and previous_time is not None:
-                time_elapsed = current_time - previous_time
+            except ValueError:
+                print("Failed to parse GPS data")
+        else:
+            print("Incomplete GPS data")
 
-                # Skip reading if time interval is too short
-                if time_elapsed < MIN_TIME_INTERVAL:
-                    return
+gps_lock = threading.Lock()
 
-                distance = haversine(previous_lat, previous_lon, lat, lon)
+def start_gps_tracking(port="/dev/ttyS2", baudrate=9600, retries=3, retry_delay=5):
+    global gps_running
+    with gps_lock:  # Ensure only one thread can access this block
+        if gps_running:
+            print("GPS tracking is already running.")
+            return
 
-                # Ignore small movements due to noise
-                if distance < MOVEMENT_DISTANCE_THRESHOLD:
-                    speed = 0.0
-                else:
-                    speed = calculate_speed(previous_lat, previous_lon, lat, lon, time_elapsed)
+        gps_running = True
+        attempt = 0
 
-                # Filter based on maximum realistic speed
-                if speed > MAXIMUM_SPEED_THRESHOLD:
-                    print(f"Unrealistic speed detected ({speed:.2f} m/s), ignoring reading.")
-                    speed = 0.0
+        while gps_running and attempt < retries:
+            try:
+                with serial.Serial(port, baudrate=baudrate, timeout=1) as gps_serial:
+                    print(f"Connected to GPS device on {port}.")
+                    while gps_running:
+                        line = gps_serial.readline().decode('ascii', errors='replace').strip()
+                        if line:
+                            parse_gps_data(line)
+                        else:
+                            print("No data received, retrying in 2 seconds...")
+                            time.sleep(2)
+            except serial.SerialException as e:
+                print(f"Error accessing serial port: {e}. Retrying in {retry_delay} seconds...")
+                attempt += 1
+                time.sleep(retry_delay)
+            except Exception as e:
+                print(f"Unexpected error: {e}")
+                break
 
-                # Add speed to buffer and calculate average
-                speed_buffer.append(speed)
-                if len(speed_buffer) > 5:  # Keep last 5 readings
-                    speed_buffer.pop(0)
-                average_speed = sum(speed_buffer) / len(speed_buffer)
+        if attempt >= retries:
+            print("Failed to connect to GPS device after multiple attempts.")
+        else:
+            print("GPS tracking stopped.")
 
-                # Determine activity based on average speed
-                if average_speed < MINIMUM_SPEED_THRESHOLD:
-                    activity = "Resting"
-                elif average_speed < 1.5:
-                    activity = "Walking"
-                    distance_traveled += distance
-                else:
-                    activity = "Running"
 
-                print(f"Average Speed: {average_speed:.2f} m/s, Activity: {activity}")
 
-            # Update previous values
-            previous_lat, previous_lon, previous_time = lat, lon, current_time
+def stop_gps_tracking():
+    """Stop GPS tracking loop."""
+    global gps_running
+    if gps_running:
+        gps_running = False
+        print("GPS tracking has been stopped.")
+    else:
+        print("GPS tracking was already stopped.")
 
-try:
-    while True:
-        line = gps_serial.readline().decode('ascii', errors='replace').strip()
-        if line:
-            parse_gps_data(line)
-        time.sleep(.1)
-except KeyboardInterrupt:
-    print("Stopping GPS tracking...")
-finally:
-    gps_serial.close()
+def get_current_coordinates():
+    """Return the latest GPS coordinates."""
+    return current_coordinates
