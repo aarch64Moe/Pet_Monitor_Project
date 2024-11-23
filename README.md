@@ -99,11 +99,11 @@ The system combines real-time data collection with AI-powered classification mod
 
 ## Device Screenshots
 ### Front: Camera, Heart Rate, Microphone 
-![Front: Camera, Heart Rate, Microphone ](pictures/front.png)
+![Front: Camera, Heart Rate, Microphone ](pictures/front.jpg)
 
 ### Back: Power Management, Motion Sensor, Temp
-![Main Page Online](pictures/back.png)
+![Main Page Online](pictures/back.jpg)
 
 ### Side: GPS
-![Side: GPS](pictures/side.png)
+![Side: GPS](pictures/side.jpg)
 
