@@ -97,3 +97,13 @@ The system combines real-time data collection with AI-powered classification mod
    git clone https://github.com/aarch64Moe/Pet_Monitor_Project.git
    cd Pet_Monitor_Project
 
+## Device Screenshots
+### Front: Camera, Heart Rate, Microphone 
+![Front: Camera, Heart Rate, Microphone ](pictures/front.png)
+
+### Back: Power Management, Motion Sensor, Temp
+![Main Page Online](pictures/back.png)
+
+### Side: GPS
+![Side: GPS](pictures/side.png)
+
