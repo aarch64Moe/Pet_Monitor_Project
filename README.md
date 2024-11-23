@@ -42,6 +42,7 @@ The system combines real-time data collection with AI-powered classification mod
 
 ### Key Features:
 - **Machine Learning**: YAMNet with a custom classification layer for detecting pet vocalizations.
+  - Model and OS (Debian, bullseye) are runing on the device 8G eMMC. 
 - **Real-Time Monitoring**:
   - Heart rate detection using MAX30102.
   - Temperature and humidity tracking using DS18B20 sensor.
